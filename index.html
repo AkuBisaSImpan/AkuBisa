@@ -1364,7 +1364,9 @@
                  try {
                      // FIREBASE: Save result to Firestore
                      const resultRef = fbDb.collection('users').doc(studentUid).collection('testHistory').doc(testKey).collection('results');
-                     // This add() operation will automatically create collections/documents if they don't exist
+                     // This add() operation WILL AUTOMATICALLY CREATE the 'users' collection (if needed),
+                     // the 'testHistory' subcollection (if needed), the document for 'testKey' (if needed),
+                     // and the 'results' subcollection (if needed) before adding the new result document.
                      await resultRef.add(newResultData);
                      console.log(`Test result saved for user ${studentUid}, test ${testKey}`);
 
