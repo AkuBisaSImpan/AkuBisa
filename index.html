@@ -1330,70 +1330,78 @@
             // Make navigateTestQuestion globally accessible
             window.navigateTestQuestion = navigateTestQuestion;
 
-            window.finishTest = () => {
+            window.finishTest = async () => { // Make async for Firebase
                  const finishButton = document.getElementById('finish-test-btn');
                  if (finishButton) toggleButtonLoading(finishButton.id, true); // Show loading on finish button
 
                  const testKey = currentTestState.testKey;
                  const testTitle = currentTestState.testTitle;
-                 const studentNisn = currentUser.nisn; // Simulation: Use NISN
                  const studentUid = currentUser.uid; // FIREBASE: Use UID
                  const totalQuestions = currentTestState.questions.length;
 
-                 // FIREBASE INTEGRATION POINT: Replace this setTimeout block with Firestore write operations.
-                 // 1. Calculate score or determine result based on `currentTestState.answers`.
-                 // 2. Prepare the result object (date, score/result, timestamp). Use Firestore Server Timestamp: firebase.firestore.FieldValue.serverTimestamp() for date/time.
-                 // 3. Save the result to the appropriate student's test history subcollection in Firestore (e.g., `/users/{studentUid}/testHistory/{testKey}/results/{newResultId}`). Use addDoc.
-                 // 4. Optionally, update the student's `highestScores` field in their main profile document (`/users/{studentUid}`) if the score is higher. Use a transaction for consistency if needed.
-                 // 5. Handle potential errors during Firestore writes.
-                 // 6. On success, call `showTestResult`.
+                 // Calculate score or determine result
+                 let correctAnswers = 0; let resultText = null; let score = 0;
+                 const isScoredTest = !threeOptionTestKeys.includes(testKey) && dataKeyRequiresScore(testKey);
+                 if (isScoredTest) {
+                     currentTestState.questions.forEach(q => { if (q.answer && currentTestState.answers[q.id] === q.answer) { correctAnswers++; } });
+                     score = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
+                 } else {
+                     const answers = Object.values(currentTestState.answers);
+                     const mostFrequentAnswer = answers.reduce((acc, val) => { acc[val] = (acc[val] || 0) + 1; return acc; }, {});
+                     let dominantResult = Object.keys(mostFrequentAnswer).reduce((a, b) => mostFrequentAnswer[a] > mostFrequentAnswer[b] ? a : b, null);
+                     if (testKey === 'gayaBelajar') resultText = dominantResult === 'A' ? 'Visual' : dominantResult === 'B' ? 'Auditori' : 'Kinestetik';
+                     else if (testKey === 'kecerdasanGanda') resultText = dominantResult === 'A' ? 'Logis-Matematis' : dominantResult === 'B' ? 'Linguistik' : 'Naturalis';
+                     else resultText = dominantResult ? `Hasil Dominan Opsi ${dominantResult}` : "Hasil Belum Terdefinisi";
+                 }
 
-                 // Simulate saving delay
-                 setTimeout(() => {
-                     let correctAnswers = 0;
-                     let resultText = null;
-                     let score = 0;
-                     const isScoredTest = !threeOptionTestKeys.includes(testKey) && dataKeyRequiresScore(testKey); // Use helper
+                 // Prepare result data for Firestore
+                 const newResultData = {
+                     date: firebase.firestore.FieldValue.serverTimestamp(), // Use server timestamp
+                     answers: currentTestState.answers // Store the actual answers submitted
+                 };
+                 if (isScoredTest) newResultData.score = score; else newResultData.result = resultText;
 
+                 try {
+                     // FIREBASE: Save result to Firestore
+                     const resultRef = fbDb.collection('users').doc(studentUid).collection('testHistory').doc(testKey).collection('results');
+                     // This add() operation will automatically create collections/documents if they don't exist
+                     await resultRef.add(newResultData);
+                     console.log(`Test result saved for user ${studentUid}, test ${testKey}`);
+
+                     // FIREBASE: Optionally update highest score in user's main document
                      if (isScoredTest) {
-                         currentTestState.questions.forEach(q => {
-                             // Ensure answer exists for the question before comparing
-                             if (q.answer && currentTestState.answers[q.id] === q.answer) {
-                                 correctAnswers++;
+                         const userDocRef = fbDb.collection('users').doc(studentUid);
+                         const userDoc = await userDocRef.get();
+                         if (userDoc.exists) {
+                             const currentHighest = userDoc.data().highestScores?.[testKey] || 0;
+                             if (score > currentHighest) {
+                                 await userDocRef.update({
+                                     [`highestScores.${testKey}`]: score // Use dot notation to update nested field
+                                 });
+                                 console.log(`Highest score updated for ${testKey}`);
                              }
-                         });
-                         score = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
-                     } else {
-                         // Simple placeholder for non-scored tests, count chosen options maybe?
-                          const answers = Object.values(currentTestState.answers);
-                          // In a real scenario, complex logic maps answers to results (Visual, Logis etc.)
-                          const mostFrequentAnswer = answers.reduce((acc, val) => { acc[val] = (acc[val] || 0) + 1; return acc; }, {});
-                           let dominantResult = Object.keys(mostFrequentAnswer).reduce((a, b) => mostFrequentAnswer[a] > mostFrequentAnswer[b] ? a : b, null);
-                           // Map 'A', 'B', 'C' to meaningful results (Example - Needs proper mapping based on questions)
-                            if (testKey === 'gayaBelajar') resultText = dominantResult === 'A' ? 'Visual' : dominantResult === 'B' ? 'Auditori' : 'Kinestetik';
-                            else if (testKey === 'kecerdasanGanda') resultText = dominantResult === 'A' ? 'Logis-Matematis' : dominantResult === 'B' ? 'Linguistik' : 'Naturalis';
-                            else resultText = dominantResult ? `Hasil Dominan Opsi ${dominantResult}` : "Hasil Belum Terdefinisi"; // Generic fallback
-                      }
+                         }
+                     }
 
-                      const newResult = { date: new Date().toISOString().split('T')[0] }; // Use YYYY-MM-DD format for simulation
-                      // FIREBASE: Use { date: firebase.firestore.FieldValue.serverTimestamp() }
-                      if (isScoredTest) newResult.score = score; else newResult.result = resultText;
+                     // --- Update Simulation Data (Remove in full Firebase implementation) ---
+                     const studentNisn = currentUser.nisn;
+                     if (!testData[studentNisn]) testData[studentNisn] = { highestScores: {} };
+                     if (!testData[studentNisn][testKey]) testData[studentNisn][testKey] = [];
+                     testData[studentNisn][testKey].push({ ...newResultData, date: new Date().toISOString().split('T')[0] }); // Simulate date
+                     if (isScoredTest) {
+                         const currentHighestSim = testData[studentNisn].highestScores[testKey] || 0;
+                         if (score > currentHighestSim) testData[studentNisn].highestScores[testKey] = score;
+                     }
+                     // --- End Simulation Update ---
 
-                      // --- Update testData Simulation ---
-                      if (!testData[studentNisn]) testData[studentNisn] = { highestScores: {} }; // Initialize if new student data needed
-                      if (!testData[studentNisn][testKey]) testData[studentNisn][testKey] = [];
-                      testData[studentNisn][testKey].push(newResult);
+                     showTestResult(testKey, testTitle, score, correctAnswers, totalQuestions, isScoredTest, resultText);
 
-                      // Update highest score if applicable
-                      if (isScoredTest) {
-                          const currentHighest = testData[studentNisn].highestScores[testKey] || 0;
-                          if (score > currentHighest) testData[studentNisn].highestScores[testKey] = score;
-                      }
-                      console.log("Test Finished & Data updated (Simulation):", JSON.stringify(testData[studentNisn])); // Log updated data
-
-                      showTestResult(testKey, testTitle, score, correctAnswers, totalQuestions, isScoredTest, resultText);
-                 }, 750); // Simulate delay for finishing test
-            };
+                 } catch (error) {
+                     console.error("Error saving test result:", error);
+                     showNotification(`Gagal menyimpan hasil test: ${error.message}`, "danger", 5000);
+                     if (finishButton) toggleButtonLoading(finishButton.id, false); // Re-enable button on error
+                 }
+             };
             // Make finishTest globally accessible
             window.finishTest = finishTest;
 
@@ -1576,6 +1584,7 @@
                          dataToUpdate.parentName = newParentName;
                          dataToUpdate.address = newAddress;
                      }
+                     // This update() operation assumes the 'users' collection and the document already exist.
                      await userDocRef.update(dataToUpdate);
                      console.log("Firestore user data updated.");
 
@@ -1961,6 +1970,7 @@
                                 // FIREBASE INTEGRATION POINT: Add to Firestore batch instead of local array.
                                 const newQuestionData = { text: questionText, options: options, answer: answer, type: is3OptionType ? 'multiple-choice-3opt' : 'multiple-choice' };
                                 // const newQuestionRef = fbDb.collection('questionBanks').doc(bankKey).collection('questions').doc(); // Auto-generate ID
+                                // // This batch.set() will automatically create the 'questions' subcollection if it doesn't exist under the 'bankKey' document.
                                 // batch.set(newQuestionRef, newQuestionData);
 
                                 // --- Simulation ---
@@ -2027,7 +2037,7 @@
                     // Process students one by one (can be slow for many students, consider pagination or server-side aggregation)
                     for (const murid of studentList.sort((a, b) => a.name.localeCompare(b.name))) {
                         const studentNisn = murid.nisn; // Simulation key
-                        const studentUid = murid.id; // FIREBASE: Use Firestore document ID (or UID if stored)
+                        const studentUid = murid.id || murid.uid; // FIREBASE: Use Firestore document ID (or UID if stored)
                         let studentTestData = {};
 
                         try {
@@ -2143,7 +2153,7 @@
                       usersOfRole.forEach((user, index) => { // Already sorted by Firestore query or simulation
                          // FIREBASE: Use Firestore document ID (`user.id`) or UID if stored.
                          const identifier = user.nisn || user.username; // Key for actions (simulation)
-                         const userId = user.id || identifier; // Use Firestore ID if available, else fallback (adjust based on your data)
+                         const userId = user.id || user.uid || identifier; // Use Firestore ID/UID if available, else fallback (adjust based on your data)
                          const isCurrentUser = userId === currentUser.uid; // Compare with logged-in user's UID
                          const statusClass = user.status === 'aktif' ? 'status-aktif' : 'status-nonaktif';
                          const statusText = user.status === 'aktif' ? 'Aktif' : 'Nonaktif';
@@ -2236,6 +2246,7 @@
 
                                      // Add Firestore document creation to batch
                                      // const userDocRef = fbDb.collection('users').doc(uid);
+                                     // // This batch.set() will automatically create the 'users' collection if it doesn't exist.
                                      // batch.set(userDocRef, newUserFirestoreData);
 
                                      // --- Simulation Add ---
@@ -2427,6 +2438,7 @@
                            // Note: Role and Identifier (NISN/Username) are generally not changed on edit.
                            // Password change requires re-authentication, handle separately or add logic here.
                            // If password field has value, trigger password update flow (re-auth + updatePassword) - omitted for brevity here.
+                           // This update() assumes the 'users' collection and document exist.
                            await userDocRef.update(dataToUpdate);
                            console.log("User updated in Firestore:", editUserId);
 
@@ -2461,6 +2473,7 @@
 
                            // Set Firestore document with UID as doc ID
                            const userDocRef = fbDb.collection('users').doc(uid);
+                           // This set() operation WILL AUTOMATICALLY CREATE the 'users' collection if it doesn't exist.
                            await userDocRef.set(newUserFirestoreData);
                            console.log("User added to Auth and Firestore:", uid);
 
@@ -2497,6 +2510,7 @@
 
                 if (confirm(`Anda yakin ingin menghapus pengguna "${userName}" (ID: ${userId})? Data terkait mungkin tetap ada. Tindakan ini tidak dapat diurungkan.`)) {
                     try {
+                        // This delete() assumes the 'users' collection and document exist.
                         await userDocRef.delete();
                         console.log("User deleted from Firestore (simulation):", userId);
 
@@ -2529,6 +2543,7 @@
 
                 if (confirm(`Anda yakin ingin ${actionText} pengguna "${userName}"?`)) {
                     try {
+                        // This update() assumes the 'users' collection and document exist.
                         await userDocRef.update({ status: newStatus });
                         console.log("User status updated in Firestore:", userId, newStatus);
 
@@ -2658,6 +2673,7 @@
                       if (editId) { // Edit mode
                           // FIREBASE: Update Firestore doc.
                           // const questionDocRef = fbDb.collection('questionBanks').doc(bankKey).collection('questions').doc(editId);
+                          // // This update() assumes the collections and document exist.
                           // await questionDocRef.update(questionData);
                           // console.log("Question updated in Firestore:", editId);
 
@@ -2670,6 +2686,8 @@
                       } else { // Add mode
                            // FIREBASE: Add new doc to Firestore.
                            // const questionsColRef = fbDb.collection('questionBanks').doc(bankKey).collection('questions');
+                           // // This add() operation WILL AUTOMATICALLY CREATE the 'questionBanks' collection (if needed)
+                           // // and the 'questions' subcollection under the 'bankKey' document if they don't exist.
                            // const newDocRef = await questionsColRef.add(questionData);
                            // console.log("Question added to Firestore with ID:", newDocRef.id);
                            // questionData.id = newDocRef.id; // Add the generated ID for simulation consistency
@@ -2714,6 +2732,7 @@
                       try {
                           // FIREBASE: Delete Firestore doc.
                           // const questionDocRef = fbDb.collection('questionBanks').doc(bankKey).collection('questions').doc(questionId);
+                          // // This delete() assumes the collections and document exist.
                           // await questionDocRef.delete();
                           // console.log("Question deleted from Firestore:", questionId);
 
